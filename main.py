@@ -20,13 +20,13 @@ def parse_args():
     p.add_argument("--augment", type=str, default="basic", choices=["basic", "strong"])
     p.add_argument("--save-checkpoints", action="store_true", default=True)
     p.add_argument("--anonymize", action="store_true", default=True)
-    # Model names (OpenAI-compatible Gemini IDs)
     p.add_argument("--models.gen_a", dest="model_gen_a", type=str, default="gemini-2.5-flash")
     p.add_argument("--models.gen_b", dest="model_gen_b", type=str, default="gemini-2.5-flash")
     p.add_argument("--models.supervisor", dest="model_supervisor", type=str, default="gemini-2.5-pro")
     p.add_argument("--models.exec", dest="model_exec", type=str, default="gemini-2.5-flash")
     p.add_argument("--models.researcher", dest="model_researcher", type=str, default="gemini-2.5-flash")
     p.add_argument("--search-provider", type=str, default="gemini", choices=["gemini", "cse"])
+    p.add_argument("--draw-graph", action="store_true", default=False)
     return p.parse_args()
 
 def main():
@@ -60,7 +60,15 @@ def main():
         search_provider=args.search_provider,
     )
 
-    # Run the LangGraph
+    if args.draw_graph:
+        try:
+            png = graph.get_graph().draw_mermaid_png()
+            with open(os.path.join(run_dir, "graph.png"), "wb") as f:
+                f.write(png)
+            print(f"Saved graph PNG to {os.path.join(run_dir, 'graph.png')}")
+        except Exception as e:
+            print(f"Graph draw failed: {e}")
+
     final_state = graph.invoke({})
     print(f"Done. Results saved to: {run_dir}")
 

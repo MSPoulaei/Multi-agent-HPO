@@ -15,7 +15,6 @@ from ..utils.plotting import plot_curves
 ALLOWED_BATCHES = [32, 64, 128, 256, 512]
 
 def validate_hparams(hp):
-    # Clamp to allowed ranges and discrete options
     hp2 = {}
     hp2["optimizer"] = "adam" if hp.get("optimizer","adam").lower() not in ["adam","sgd"] else hp["optimizer"].lower()
     hp2["learning_rate"] = float(min(max(hp.get("learning_rate",1e-3), 1e-4), 1e-1))
@@ -86,13 +85,10 @@ def train_and_eval(
                     tr_targets.extend(targets.cpu().numpy())
 
                 tr_loss = tr_loss_sum / len(train_loader.dataset)
-                tr_acc = accuracy(
-                    preds = torch.tensor(tr_preds).numpy(),
-                    targets = torch.tensor(tr_targets).numpy()
-                )
+                tr_acc = accuracy(torch.tensor(tr_preds).numpy(), torch.tensor(tr_targets).numpy())
                 tr_f1 = f1_macro(tr_targets, tr_preds)
 
-                # Validation
+                # Validation (using the test split as requested)
                 model.eval()
                 va_loss_sum = 0.0
                 va_preds, va_targets = [], []
@@ -107,11 +103,8 @@ def train_and_eval(
                         va_preds.extend(preds.cpu().numpy())
                         va_targets.extend(targets.cpu().numpy())
                 va_loss = va_loss_sum / len(val_loader.dataset)
-                va_acc = accuracy(
-                    preds = torch.tensor(va_preds).numpy(),
-                    targets = torch.tensor(va_targets).numpy()
-                )
                 from sklearn.metrics import f1_score
+                va_acc = accuracy(torch.tensor(va_preds).numpy(), torch.tensor(va_targets).numpy())
                 va_f1 = f1_score(va_targets, va_preds, average="macro")
 
                 if scheduler is not None:
@@ -145,17 +138,15 @@ def train_and_eval(
             metrics_path = os.path.join(trial_dir, "metrics_epoch.csv")
             metrics_df.to_csv(metrics_path, index=False)
 
-            # Save plots
-            from ..utils.plotting import plot_curves
+            # Plots (includes val_loss.png)
             plot_curves(metrics_df, trial_dir)
 
-            # Restore best and test
             if best_state is not None:
                 model.load_state_dict(best_state["model"])
             if save_checkpoints and best_state is not None:
                 torch.save(best_state, os.path.join(trial_dir, "checkpoint_best.pt"))
 
-            # Test
+            # Final "test" — same dataset as val by design here
             model.eval()
             te_loss_sum = 0.0
             te_preds, te_targets = [], []
@@ -181,6 +172,7 @@ def train_and_eval(
                 "test_acc": float(te_acc),
                 "test_f1": float(te_f1),
                 "oom_adjusted": bool(oom_adjusted),
+                "val_and_test_same_dataset": True
             }
             return summary, metrics_df
 
@@ -191,7 +183,6 @@ def train_and_eval(
             else:
                 raise
 
-    # Attempt with desired batch size; back off if OOM
     idx = ALLOWED_BATCHES.index(effective_bs) if effective_bs in ALLOWED_BATCHES else 2
     while idx >= 0:
         result = run_training(ALLOWED_BATCHES[idx])
@@ -205,6 +196,5 @@ def train_and_eval(
     if result[0] is None:
         raise RuntimeError("OOM even at smallest batch size")
 
-    # Save summary JSON
     save_json(os.path.join(trial_dir, "summary.json"), result[0])
     return result

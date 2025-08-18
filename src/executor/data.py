@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import random_split, DataLoader
+from torch.utils.data import DataLoader
 import torchvision.transforms as T
 import torchvision.datasets as dsets
 
@@ -24,18 +24,13 @@ def get_transforms(augment="basic"):
     test_tf = T.Compose([T.ToTensor(), T.Normalize(mean, std)])
     return train_tf, test_tf
 
-def get_dataloaders(data_root, batch_size, num_workers=4, augment="basic", val_split=5000, seed=1337):
+def get_dataloaders(data_root, batch_size, num_workers=4, augment="basic", seed=1337):
+    # Train split for training, test split for validation (and final test) — only two datasets total.
     train_tf, test_tf = get_transforms(augment)
-    # Dataset names not exposed to agents
-    full_train = dsets.CIFAR10(root=data_root, train=True, download=True, transform=train_tf)
-    test_set = dsets.CIFAR10(root=data_root, train=False, download=True, transform=test_tf)
-
-    train_len = len(full_train) - val_split
-    val_len = val_split
-    gen = torch.Generator().manual_seed(seed)
-    train_set, val_set = random_split(full_train, [train_len, val_len], generator=gen)
+    train_set = dsets.CIFAR10(root=data_root, train=True, download=True, transform=train_tf)
+    test_set  = dsets.CIFAR10(root=data_root, train=False, download=True, transform=test_tf)
 
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
-    test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    val_loader   = DataLoader(test_set,  batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    test_loader  = val_loader  # same dataset per your requirement
     return train_loader, val_loader, test_loader

@@ -11,9 +11,9 @@ from ..executor.metrics import heuristic_analysis
 from ..tools.google_search import web_search
 from ..utils.io import save_json, save_csv
 from ..utils.sanitize import anonymize_text
+from .state import HPOState
 
 def clamp_actions_to_ranges(last_hp: Dict[str, Any], actions: list):
-    # Apply actions onto last_hp and clamp
     hp = dict(last_hp) if last_hp else {
         "optimizer":"adam", "learning_rate":3e-3, "train_batch_size":128, "weight_decay":5e-4, "label_smoothing":0.05
     }
@@ -39,9 +39,13 @@ def clamp_actions_to_ranges(last_hp: Dict[str, Any], actions: list):
             if "to" in a:
                 hp[field] = int(a["to"])
             elif act == "increase":
-                hp[field] = min([32,64,128,256,512], key=lambda x: (x - hp[field]) if x > hp[field] else 10**9)
+                choices = [32,64,128,256,512]
+                greater = [x for x in choices if x > hp[field]]
+                hp[field] = min(greater) if greater else choices[-1]
             elif act == "decrease":
-                hp[field] = max([32,64,128,256,512], key=lambda x: (hp[field] - x) if x < hp[field] else -1e9)
+                choices = [32,64,128,256,512]
+                lesser = [x for x in choices if x < hp[field]]
+                hp[field] = max(lesser) if lesser else choices[0]
         elif field == "label_smoothing":
             if "to" in a:
                 hp[field] = float(a["to"])
@@ -55,7 +59,6 @@ def parse_json_safe(text: str, default: Any):
     try:
         return json.loads(text)
     except Exception:
-        # Try to extract JSON
         import re
         m = re.search(r"\{.*\}", text, re.S)
         if m:
@@ -106,10 +109,9 @@ def build_hpo_graph(
             "search_provider": search_provider,
         }
 
-    graph = StateGraph(dict)
+    builder = StateGraph(HPOState)
 
-    # Node: Consultant A
-    def consultant_a_node(state):
+    def consultant_a_node(state: HPOState):
         llm = llm_for_role("gen_a", state["model_ids"]["gen_a"], temperature=0.4)
         inp = CONSULTANT_USER.format(
             last_hparams=json.dumps(state["last_hparams"]),
@@ -120,12 +122,10 @@ def build_hpo_graph(
         )
         resp = llm.invoke([("system", GEN_SYS), ("user", inp)]).content
         data = parse_json_safe(resp, {"proposed_changes": [], "notes":"", "confidence":0.5})
-        state["gen_consult_a"].append(data)
-        state["consult_turn"] += 1
-        return state
+        # Append-only update, and increment consult_turn
+        return {"gen_consult_a": [data], "consult_turn": state["consult_turn"] + 1}
 
-    # Node: Consultant B
-    def consultant_b_node(state):
+    def consultant_b_node(state: HPOState):
         llm = llm_for_role("gen_b", state["model_ids"]["gen_b"], temperature=0.4)
         inp = CONSULTANT_USER.format(
             last_hparams=json.dumps(state["last_hparams"]),
@@ -136,24 +136,18 @@ def build_hpo_graph(
         )
         resp = llm.invoke([("system", GEN_SYS), ("user", inp)]).content
         data = parse_json_safe(resp, {"proposed_changes": [], "notes":"", "confidence":0.5})
-        state["gen_consult_b"].append(data)
-        state["consult_turn"] += 1
-        return state
+        return {"gen_consult_b": [data], "consult_turn": state["consult_turn"] + 1}
 
-    # Decide next in consult loop
-    def consult_router(state):
-        # alternate: A then B, count increases at each
+    def consult_router(state: HPOState):
         if state["consult_turn"] < state["consult_limit"]:
-            # pick next: if even turns so far -> A, else -> B
             return "consultant_a" if state["consult_turn"] % 2 == 0 else "consultant_b"
         else:
             return "supervisor"
 
-    # Node: Supervisor to finalize hyperparams
-    def supervisor_node(state):
+    def supervisor_node(state: HPOState):
         llm = llm_for_role("supervisor", state["model_ids"]["supervisor"], temperature=0.2)
-        a = state["gen_consult_a"][-1] if state["gen_consult_a"] else {"proposed_changes": []}
-        b = state["gen_consult_b"][-1] if state["gen_consult_b"] else {"proposed_changes": []}
+        a = state["gen_consult_a"][-1] if state.get("gen_consult_a") else {"proposed_changes": []}
+        b = state["gen_consult_b"][-1] if state.get("gen_consult_b") else {"proposed_changes": []}
         inp = SUPERVISOR_USER.format(
             last_hparams=json.dumps(state["last_hparams"]),
             consultant_a=json.dumps(a),
@@ -163,11 +157,9 @@ def build_hpo_graph(
         resp = llm.invoke([("system", GEN_SYS), ("user", inp)]).content
         data = parse_json_safe(resp, {"hyperparameters": state["last_hparams"], "justification": ""})
         hp = validate_hparams(data.get("hyperparameters", state["last_hparams"]))
-        state["supervisor_out"] = {"hyperparameters": hp, "justification": data.get("justification","")}
-        return state
+        return {"supervisor_out": {"hyperparameters": hp, "justification": data.get("justification","")}}
 
-    # Node: Executor train/eval
-    def executor_node(state):
+    def executor_node(state: HPOState):
         trial_idx = state["trial_idx"]
         trial_dir = os.path.join(state["run_dir"], f"trial_{trial_idx:03d}")
         hp = state["supervisor_out"]["hyperparameters"]
@@ -184,12 +176,11 @@ def build_hpo_graph(
             seed=1337,
         )
 
-        # Update best
         val_acc = float(summary["best_val_acc"])
-        if val_acc > state["best_so_far"]["val_acc"]:
-            state["best_so_far"] = {"val_acc": val_acc, "trial_idx": trial_idx, "hparams": summary["effective_hparams"]}
+        best_so_far = state["best_so_far"]
+        if val_acc > best_so_far["val_acc"]:
+            best_so_far = {"val_acc": val_acc, "trial_idx": trial_idx, "hparams": summary["effective_hparams"]}
 
-        # Save trial row
         row = {
             "trial_idx": trial_idx,
             "optimizer": summary["effective_hparams"]["optimizer"],
@@ -202,24 +193,18 @@ def build_hpo_graph(
             "test_f1": summary["test_f1"],
             "oom_adjusted": summary["oom_adjusted"],
         }
-        state["trials_summary_rows"].append(row)
 
-        # Heuristic analysis
-        feats, keywords = heuristic_analysis(metrics_df)
-        state["analysis"] = {"trends": feats, "keywords": keywords}
-        state["keywords"] = keywords
-        state["train_results"] = summary
-        state["metrics_df_path"] = os.path.join(trial_dir, "metrics_epoch.csv")
+        metrics_path = os.path.join(trial_dir, "metrics_epoch.csv")
+        return {
+            "train_results": summary,
+            "metrics_df_path": metrics_path,
+            "best_so_far": best_so_far,
+            "trials_summary_rows": [row],
+        }
 
-        # Save analysis
-        save_json(os.path.join(trial_dir, "analysis.json"), {"heuristics": feats, "keywords": keywords})
-        return state
-
-    # Node: LLM analyzer (use executor agent)
-    def analyzer_node(state):
+    def analyzer_node(state: HPOState):
         llm = llm_for_role("exec", state["model_ids"]["exec"], temperature=0.2)
         metrics_df = pd.read_csv(state["metrics_df_path"])
-        # Compact numeric summary for the LLM (head/tail few values)
         def clip(arr, k=5):
             arr = list(arr)
             if len(arr) <= 2*k:
@@ -233,79 +218,76 @@ def build_hpo_graph(
             "train_f1": clip(metrics_df["train_f1"].round(4).tolist()),
             "val_f1": clip(metrics_df["val_f1"].round(4).tolist()),
         }
+        feats, keywords_h = heuristic_analysis(metrics_df)
         inp = EXEC_ANALYZER_USER.format(
             last_hparams=json.dumps(state["supervisor_out"]["hyperparameters"]),
             metrics_head_tail=json.dumps(m),
-            trends=json.dumps(state["analysis"]["trends"]),
-            heuristic_flags=json.dumps(state["analysis"]["trends"]["flags"])
+            trends=json.dumps(feats),
+            heuristic_flags=json.dumps(feats["flags"])
         )
         resp = llm.invoke([("system", EXEC_ANALYZER_SYS), ("user", inp)]).content
-        data = parse_json_safe(resp, {"keywords": state["keywords"], "explanation": "", "confidence": 0.6})
-        # Merge keywords
-        merged_kw = list(set(state["keywords"] + data.get("keywords", [])))
-        state["keywords"] = merged_kw
-        # Save
+        data = parse_json_safe(resp, {"keywords": keywords_h, "explanation": "", "confidence": 0.6})
+        merged_kw = list(set(keywords_h + data.get("keywords", [])))
         trial_dir = os.path.join(state["run_dir"], f"trial_{state['trial_idx']:03d}")
         with open(os.path.join(trial_dir, "analysis_llm.txt"), "w") as f:
             f.write(resp)
-        return state
+        save_json(os.path.join(trial_dir, "analysis.json"), {"heuristics": feats, "keywords": merged_kw})
+        return {"analysis": {"trends": feats, "keywords": merged_kw}, "keywords": merged_kw}
 
-    # Node: Researcher web search and actionable deltas
-    def researcher_node(state):
+    def researcher_node(state: HPOState):
         llm = llm_for_role("researcher", state["model_ids"]["researcher"], temperature=0.3)
-        query = " ".join(state["keywords"]) + " image classification training remedies generalization optimization"
+        query = " ".join(state.get("keywords", [])) + " image classification training remedies generalization optimization"
         excerpts = web_search(query, provider=state["search_provider"], top_k=5)
-        # LLM to turn excerpts into actionable deltas
         inp = RESEARCHER_USER.format(
-            keywords=json.dumps(state["keywords"]),
+            keywords=json.dumps(state.get("keywords", [])),
             excerpts=json.dumps(excerpts),
             last_hparams=json.dumps(state["supervisor_out"]["hyperparameters"]),
         )
         resp = llm.invoke([("system", RESEARCHER_SYS), ("user", inp)]).content
         data = parse_json_safe(resp, {"actions": [], "notes": ""})
-        # Clamp actions to valid ranges and compute a candidate for next round (not directly applied; consultants will see it)
         candidate = clamp_actions_to_ranges(state["supervisor_out"]["hyperparameters"], data.get("actions", []))
-        state["web_hints"] = {"actions": data.get("actions", []), "notes": data.get("notes",""), "candidate": candidate}
-        return state
+        return {"web_hints": {"actions": data.get("actions", []), "notes": data.get("notes",""), "candidate": candidate}}
 
-    # Router after researcher: continue or end
-    def loop_or_end(state):
-        # Save trial summary CSV so far
-        df = pd.DataFrame(state["trials_summary_rows"])
+    def loop_or_end(state: HPOState):
+        df = pd.DataFrame(state.get("trials_summary_rows", []))
         save_csv(os.path.join(state["run_dir"], "trials_summary.csv"), df)
 
-        # Prepare next iteration
-        state["trial_idx"] += 1
-        state["consult_turn"] = 0
-        state["gen_consult_a"] = []
-        state["gen_consult_b"] = []
-        state["last_hparams"] = state["supervisor_out"]["hyperparameters"]
-
-        if state["trial_idx"] >= state["rounds"]:
-            # Save final best
-            best = state["best_so_far"]
-            save_json(os.path.join(state["run_dir"], "best_overall.json"), best)
+        next_trial = state["trial_idx"] + 1
+        updates = {
+            "trial_idx": next_trial,
+            "consult_turn": 0,
+            "gen_consult_a": [],  # reset lists
+            "gen_consult_b": [],
+            "last_hparams": state["supervisor_out"]["hyperparameters"],
+        }
+        if next_trial >= state["rounds"]:
+            save_json(os.path.join(state["run_dir"], "best_overall.json"), state["best_so_far"])
             return END
         else:
-            return "consultant_a"
+            return "consultant_a", updates
 
     # Build graph
-    graph.add_node("init", init_state)
-    graph.add_node("consultant_a", consultant_a_node)
-    graph.add_node("consultant_b", consultant_b_node)
-    graph.add_node("supervisor", supervisor_node)
-    graph.add_node("executor", executor_node)
-    graph.add_node("analyzer", analyzer_node)
-    graph.add_node("researcher", researcher_node)
+    builder.add_node("init", init_state)
+    builder.add_node("consultant_a", consultant_a_node)
+    builder.add_node("consultant_b", consultant_b_node)
+    builder.add_node("supervisor", supervisor_node)
+    builder.add_node("executor", executor_node)
+    builder.add_node("analyzer", analyzer_node)
+    builder.add_node("researcher", researcher_node)
 
-    # Edges
-    graph.set_entry_point("init")
-    graph.add_conditional_edges("consultant_a", consult_router, {"consultant_a":"consultant_a","consultant_b":"consultant_b","supervisor":"supervisor"})
-    graph.add_conditional_edges("consultant_b", consult_router, {"consultant_a":"consultant_a","consultant_b":"consultant_b","supervisor":"supervisor"})
-    graph.add_edge("init", "consultant_a")
-    graph.add_edge("supervisor", "executor")
-    graph.add_edge("executor", "analyzer")
-    graph.add_edge("analyzer", "researcher")
-    graph.add_conditional_edges("researcher", loop_or_end, {"consultant_a":"consultant_a", END: END})
+    builder.set_entry_point("init")
+    builder.add_conditional_edges("consultant_a", consult_router, {
+        "consultant_a":"consultant_a","consultant_b":"consultant_b","supervisor":"supervisor"
+    })
+    builder.add_conditional_edges("consultant_b", consult_router, {
+        "consultant_a":"consultant_a","consultant_b":"consultant_b","supervisor":"supervisor"
+    })
+    builder.add_edge("init", "consultant_a")
+    builder.add_edge("supervisor", "executor")
+    builder.add_edge("executor", "analyzer")
+    builder.add_edge("analyzer", "researcher")
+    builder.add_conditional_edges("researcher", lambda s: "consultant_a" if s["trial_idx"]+1 < s["rounds"] else END,
+                                  {"consultant_a":"consultant_a", END: END})
 
-    return graph.compile()
+    compiled = builder.compile()
+    return compiled
