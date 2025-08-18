@@ -60,7 +60,7 @@ pip install -r requirements.txt
 2) Create a .env file in the project root (or set environment variables via your platform). Example:
 ```env
 # OpenAI-compatible Gemini base URL
-GEMINI_OPENAI_BASE_URL=https://generativelanguage.googleapis.com/openai
+GEMINI_OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
 
 # One key per agent (or set GEMINI_API_KEY for all)
 GEMINI_API_KEY_GEN_A=your_gen_a_key
@@ -104,7 +104,7 @@ Colab
 ```bash
 !pip install -r requirements.txt
 # Write your .env (or set %env variables)
-%env GEMINI_OPENAI_BASE_URL=https://generativelanguage.googleapis.com/openai
+%env GEMINI_OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
 %env GEMINI_API_KEY=YOUR_KEY
 # Optional per-role keys:
 # %env GEMINI_API_KEY_GEN_A=...
@@ -121,7 +121,7 @@ Kaggle
 ```python
 !pip install -r requirements.txt
 import os
-os.environ["GEMINI_OPENAI_BASE_URL"] = "https://generativelanguage.googleapis.com/openai"
+os.environ["GEMINI_OPENAI_BASE_URL"] = "https://generativelanguage.googleapis.com/v1beta/openai/"
 os.environ["GEMINI_API_KEY"] = "YOUR_KEY"
 # Optional per-role keys...
 ```
@@ -236,7 +236,7 @@ Note: Validation and test are the same dataset by design here.
 ## Environment variables (LLMs and Search)
 
 LLM (Gemini OpenAI-compatible):
-- GEMINI_OPENAI_BASE_URL (default: https://generativelanguage.googleapis.com/openai)
+- GEMINI_OPENAI_BASE_URL (default: https://generativelanguage.googleapis.com/v1beta/openai/)
 - GEMINI_API_KEY_GEN_A, GEMINI_API_KEY_GEN_B, GEMINI_API_KEY_SUP, GEMINI_API_KEY_EXEC, GEMINI_API_KEY_RES
 - GEMINI_API_KEY (fallback for all roles)
 
@@ -281,7 +281,7 @@ Agents propose changes; supervisor finalizes within bounds. The executor validat
   - Or run with `--draw-graph` to save runs/<ts>/graph.png.
 
 - Gemini auth or 404 base URL
-  - Ensure `GEMINI_OPENAI_BASE_URL=https://generativelanguage.googleapis.com/openai`
+  - Ensure `GEMINI_OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/`
   - Ensure the correct API key is set for each role or set `GEMINI_API_KEY` for all.
 
 - Web search returns empty

@@ -1,6 +1,7 @@
 import os
 from langchain_openai import ChatOpenAI
 
+
 def llm_for_role(role: str, model_id: str, temperature: float = 0.3):
     # Pick agent-specific key if available; fallback to GEMINI_API_KEY
     key_env = {
@@ -11,10 +12,15 @@ def llm_for_role(role: str, model_id: str, temperature: float = 0.3):
         "researcher": "GEMINI_API_KEY_RES",
     }.get(role, "GEMINI_API_KEY")
     api_key = os.getenv(key_env) or os.getenv("GEMINI_API_KEY")
-    base_url = os.getenv("GEMINI_OPENAI_BASE_URL", "https://generativelanguage.googleapis.com/openai")
+    base_url = os.getenv(
+        "GEMINI_OPENAI_BASE_URL",
+        "https://generativelanguage.googleapis.com/v1beta/openai/",
+    )
 
     if api_key is None:
-        raise RuntimeError(f"Missing API key for role {role} (env {key_env} or GEMINI_API_KEY)")
+        raise RuntimeError(
+            f"Missing API key for role {role} (env {key_env} or GEMINI_API_KEY)"
+        )
 
     return ChatOpenAI(
         model=model_id,
