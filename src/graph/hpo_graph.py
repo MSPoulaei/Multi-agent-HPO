@@ -110,6 +110,7 @@ def build_hpo_graph(
     rounds: int,
     model_ids: Dict[str, str],
     search_provider: str = "gemini",
+    history_length: int = 8,
 ):
     os.makedirs(run_dir, exist_ok=True)
 
@@ -150,12 +151,14 @@ def build_hpo_graph(
 
     def consultant_a_node(state: HPOState):
         llm = llm_for_role("gen_a", state["model_ids"]["gen_a"], temperature=0.4)
+        history = state.get("consultant_history", [])[-history_length:]
         inp = CONSULTANT_USER.format(
             last_hparams=json.dumps(state["last_hparams"]),
             results_summary=json.dumps(state.get("train_results", {})),
             heuristics=json.dumps(state.get("analysis", {}).get("trends", {})),
             keywords=json.dumps(state.get("keywords", [])),
             web_hints=json.dumps(state.get("web_hints", {})),
+            conversation_history=json.dumps(history),
         )
         resp = llm.invoke([("system", GEN_SYS), ("user", inp)]).content
         data = parse_json_safe(
@@ -168,6 +171,7 @@ def build_hpo_graph(
             "prompt": inp,
             "response": resp,
             "parsed": data,
+            "conversation_history": history,
         }
         transcript_path = os.path.join(
             state["run_dir"],
@@ -177,17 +181,21 @@ def build_hpo_graph(
         )
         with open(transcript_path, "w", encoding="utf-8") as f:
             json.dump(transcript, f, ensure_ascii=False, indent=2)
-        # Append-only update, and increment consult_turn
-        return {"gen_consult_a": [data], "consult_turn": state["consult_turn"] + 1}
+        # Update consultant history
+        consultant_history = state.get("consultant_history", []).copy()
+        consultant_history.append(transcript)
+        return {"gen_consult_a": [data], "consult_turn": state["consult_turn"] + 1, "consultant_history": consultant_history}
 
     def consultant_b_node(state: HPOState):
         llm = llm_for_role("gen_b", state["model_ids"]["gen_b"], temperature=0.4)
+        history = state.get("consultant_history", [])[-history_length:]
         inp = CONSULTANT_USER.format(
             last_hparams=json.dumps(state["last_hparams"]),
             results_summary=json.dumps(state.get("train_results", {})),
             heuristics=json.dumps(state.get("analysis", {}).get("trends", {})),
             keywords=json.dumps(state.get("keywords", [])),
             web_hints=json.dumps(state.get("web_hints", {})),
+            conversation_history=json.dumps(history),
         )
         resp = llm.invoke([("system", GEN_SYS), ("user", inp)]).content
         data = parse_json_safe(
@@ -200,6 +208,7 @@ def build_hpo_graph(
             "prompt": inp,
             "response": resp,
             "parsed": data,
+            "conversation_history": history,
         }
         transcript_path = os.path.join(
             state["run_dir"],
@@ -209,7 +218,9 @@ def build_hpo_graph(
         )
         with open(transcript_path, "w", encoding="utf-8") as f:
             json.dump(transcript, f, ensure_ascii=False, indent=2)
-        return {"gen_consult_b": [data], "consult_turn": state["consult_turn"] + 1}
+        consultant_history = state.get("consultant_history", []).copy()
+        consultant_history.append(transcript)
+        return {"gen_consult_b": [data], "consult_turn": state["consult_turn"] + 1, "consultant_history": consultant_history}
 
     def consult_router_a(state: HPOState):
         if state["consult_turn"] < state["consult_limit"]:
@@ -243,11 +254,13 @@ def build_hpo_graph(
             if state.get("gen_consult_b")
             else {"proposed_changes": []}
         )
+        history = state.get("consultant_history", [])[-history_length:]
         inp = SUPERVISOR_USER.format(
             last_hparams=json.dumps(state["last_hparams"]),
             consultant_a=json.dumps(a),
             consultant_b=json.dumps(b),
             web_hints=json.dumps(state.get("web_hints", {})),
+            conversation_history=json.dumps(history),
         )
         resp = llm.invoke([("system", GEN_SYS), ("user", inp)]).content
         data = parse_json_safe(
@@ -260,6 +273,7 @@ def build_hpo_graph(
             "prompt": inp,
             "response": resp,
             "parsed": data,
+            "conversation_history": history,
         }
         transcript_path = os.path.join(
             state["run_dir"],

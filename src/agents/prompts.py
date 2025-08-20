@@ -19,7 +19,10 @@ Input:
 - heuristics: {heuristics}
 - keywords: {keywords}
 - web_hints: {web_hints}
+- conversation_history: {conversation_history}
 - constraints: optimizer in [adam, sgd]; lr in [1e-4,1e-1]; batch in [32,64,128,256,512]; wd in [1e-5,1e-1]; label_smoothing in [0,0.2]
+
+You also receive the full conversation history of previous consultant and supervisor rounds. Use this to inform your reasoning and avoid repeating previous suggestions unless justified.
 
 Respond as JSON:
 {{
@@ -40,6 +43,9 @@ Inputs:
 - consultant_a: {consultant_a}
 - consultant_b: {consultant_b}
 - web_hints: {web_hints}
+- conversation_history: {conversation_history}
+
+You also receive the full conversation history of previous consultant and supervisor rounds. Use this to inform your merging and justification, referencing previous decisions and rationales as needed.
 
 Constraints:
 - optimizer ∈ {{adam, sgd}}

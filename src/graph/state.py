@@ -22,3 +22,4 @@ class HPOState(TypedDict, total=False):
     search_provider: str
     best_so_far: Dict[str, Any]
     trials_summary_rows: Annotated[List[Dict[str, Any]], operator.add]
+    consultant_history: Annotated[List[Dict[str, Any]], operator.add]

@@ -27,6 +27,7 @@ def parse_args():
     p.add_argument("--models.researcher", dest="model_researcher", type=str, default="gemini-2.5-flash")
     p.add_argument("--search-provider", type=str, default="gemini", choices=["gemini", "cse"])
     p.add_argument("--draw-graph", action="store_true", default=False)
+    p.add_argument("--history-length", type=int, default=8, help="Number of messages to keep in conversation history for agents")
     return p.parse_args()
 
 def main():
@@ -58,6 +59,7 @@ def main():
             "researcher": args.model_researcher,
         },
         search_provider=args.search_provider,
+        history_length=args.history_length,
     )
 
     if args.draw_graph:
