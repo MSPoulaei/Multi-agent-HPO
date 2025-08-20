@@ -1,0 +1,15 @@
+langchain
+langchain-community
+langchain-openai
+langgraph
+
+torch>=2.0.0
+torchvision>=0.15.0
+python-dotenv
+pydantic
+numpy
+pandas
+matplotlib
+requests
+tqdm
+scikit-learn
