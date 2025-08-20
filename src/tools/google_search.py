@@ -13,7 +13,7 @@ def gemini_grounded_search(query: str, top_k: int = 5):
 
     # Gemini generateContent with google_search tool (v1beta)
     # Note: This path may change; verify with current Gemini API docs.
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-pro-exp-02-05:generateContent"
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-pro:generateContent"
     headers = {"Content-Type": "application/json"}
     params = {"key": api_key}
     body = {
