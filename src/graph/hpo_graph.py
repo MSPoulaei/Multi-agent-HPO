@@ -3,6 +3,7 @@ import json
 import pandas as pd
 from typing import Dict, Any
 from langgraph.graph import StateGraph, END
+import logging
 
 from ..agents.models import llm_for_role
 from ..agents.prompts import GEN_SYS, CONSULTANT_USER, SUPERVISOR_USER, EXEC_ANALYZER_SYS, EXEC_ANALYZER_USER, RESEARCHER_SYS, RESEARCHER_USER
@@ -10,7 +11,7 @@ from ..executor.train import train_and_eval, validate_hparams
 from ..executor.metrics import heuristic_analysis
 from ..tools.google_search import web_search
 from ..utils.io import save_json, save_csv
-from ..utils.sanitize import anonymize_text
+# Removing unused import
 from .state import HPOState
 
 def clamp_actions_to_ranges(last_hp: Dict[str, Any], actions: list):
@@ -92,7 +93,7 @@ def build_hpo_graph(
             "consult_turn": 0,
             "consult_limit": consult_turns,
             "last_hparams": {
-                "optimizer":"adam","learning_rate":3e-3,"train_batch_size":128,"weight_decay":5e-4,"label_smoothing":0.05
+                "optimizer":"N/A","learning_rate":-1,"train_batch_size":0,"weight_decay":0,"label_smoothing":0
             },
             "gen_consult_a": [],
             "gen_consult_b": [],
@@ -138,6 +139,18 @@ def build_hpo_graph(
         data = parse_json_safe(resp, {"proposed_changes": [], "notes":"", "confidence":0.5})
         return {"gen_consult_b": [data], "consult_turn": state["consult_turn"] + 1}
 
+    def consult_router_a(state: HPOState):
+        if state["consult_turn"] < state["consult_limit"]:
+            return "consultant_b"
+        else:
+            return "supervisor"
+
+    def consult_router_b(state: HPOState):
+        if state["consult_turn"] < state["consult_limit"]:
+            return "consultant_a"
+        else:
+            return "supervisor"
+    
     def consult_router(state: HPOState):
         if state["consult_turn"] < state["consult_limit"]:
             return "consultant_a" if state["consult_turn"] % 2 == 0 else "consultant_b"
@@ -246,25 +259,21 @@ def build_hpo_graph(
         resp = llm.invoke([("system", RESEARCHER_SYS), ("user", inp)]).content
         data = parse_json_safe(resp, {"actions": [], "notes": ""})
         candidate = clamp_actions_to_ranges(state["supervisor_out"]["hyperparameters"], data.get("actions", []))
-        return {"web_hints": {"actions": data.get("actions", []), "notes": data.get("notes",""), "candidate": candidate}}
+        next_trial = state["trial_idx"] + 1
+        return {"web_hints": {"actions": data.get("actions", []), "notes": data.get("notes",""), "candidate": candidate},
+            "trial_idx": next_trial,
+            "consult_turn": 0,
+            "last_hparams": state["supervisor_out"]["hyperparameters"],
+                }
 
     def loop_or_end(state: HPOState):
         df = pd.DataFrame(state.get("trials_summary_rows", []))
         save_csv(os.path.join(state["run_dir"], "trials_summary.csv"), df)
-
-        next_trial = state["trial_idx"] + 1
-        updates = {
-            "trial_idx": next_trial,
-            "consult_turn": 0,
-            "gen_consult_a": [],  # reset lists
-            "gen_consult_b": [],
-            "last_hparams": state["supervisor_out"]["hyperparameters"],
-        }
-        if next_trial >= state["rounds"]:
+        if state["trial_idx"] >= state["rounds"]:
             save_json(os.path.join(state["run_dir"], "best_overall.json"), state["best_so_far"])
             return END
         else:
-            return "consultant_a", updates
+            return "consultant_a"
 
     # Build graph
     builder.add_node("init", init_state)
@@ -276,18 +285,18 @@ def build_hpo_graph(
     builder.add_node("researcher", researcher_node)
 
     builder.set_entry_point("init")
-    builder.add_conditional_edges("consultant_a", consult_router, {
-        "consultant_a":"consultant_a","consultant_b":"consultant_b","supervisor":"supervisor"
+    builder.add_conditional_edges("consultant_a", consult_router_a, {"consultant_b":"consultant_b","supervisor":"supervisor"
     })
-    builder.add_conditional_edges("consultant_b", consult_router, {
-        "consultant_a":"consultant_a","consultant_b":"consultant_b","supervisor":"supervisor"
+    builder.add_conditional_edges("consultant_b", consult_router_b, {
+        "consultant_a":"consultant_a","supervisor":"supervisor"
     })
     builder.add_edge("init", "consultant_a")
     builder.add_edge("supervisor", "executor")
     builder.add_edge("executor", "analyzer")
     builder.add_edge("analyzer", "researcher")
-    builder.add_conditional_edges("researcher", lambda s: "consultant_a" if s["trial_idx"]+1 < s["rounds"] else END,
+    builder.add_conditional_edges("researcher", loop_or_end,
                                   {"consultant_a":"consultant_a", END: END})
 
-    compiled = builder.compile()
+    logging.basicConfig(level=logging.INFO)
+    compiled = builder.compile(debug=True)
     return compiled
