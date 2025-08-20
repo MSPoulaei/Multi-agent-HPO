@@ -2,7 +2,6 @@ import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.cuda.amp import autocast, GradScaler
 import pandas as pd
 from tqdm import tqdm
 
@@ -34,7 +33,7 @@ def make_optimizer(model, hp):
 
 def train_and_eval(
     trial_dir, hp, epochs=20, patience=8, scheduler_type="cosine",
-    augment="basic", num_workers=4, amp=True, save_checkpoints=True, seed=1337, device=None
+    augment="basic", num_workers=4, amp=False, save_checkpoints=True, seed=1337, device=None
 ):
     os.makedirs(trial_dir, exist_ok=True)
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -57,7 +56,6 @@ def train_and_eval(
                 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
             else:
                 scheduler = None
-            scaler = GradScaler(enabled=amp)
 
             best_val_acc = -1.0
             best_state = None
@@ -71,13 +69,11 @@ def train_and_eval(
                 for images, targets in tqdm(train_loader, desc=f"Train e{epoch}/{epochs}", leave=False):
                     images, targets = images.to(device), targets.to(device)
                     optimizer.zero_grad(set_to_none=True)
-                    with autocast(enabled=amp):
-                        logits = model(images)
-                        loss = criterion(logits, targets)
-                    scaler.scale(loss).backward()
+                    logits = model(images)
+                    loss = criterion(logits, targets)
+                    loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    scaler.step(optimizer)
-                    scaler.update()
+                    optimizer.step()
 
                     tr_loss_sum += loss.item() * images.size(0)
                     preds = torch.argmax(logits.detach(), dim=1)
@@ -95,9 +91,8 @@ def train_and_eval(
                 with torch.no_grad():
                     for images, targets in tqdm(val_loader, desc=f"Val e{epoch}/{epochs}", leave=False):
                         images, targets = images.to(device), targets.to(device)
-                        with autocast(enabled=amp):
-                            logits = model(images)
-                            loss = criterion(logits, targets)
+                        logits = model(images)
+                        loss = criterion(logits, targets)
                         va_loss_sum += loss.item() * images.size(0)
                         preds = torch.argmax(logits, dim=1)
                         va_preds.extend(preds.cpu().numpy())
@@ -153,9 +148,8 @@ def train_and_eval(
             with torch.no_grad():
                 for images, targets in tqdm(test_loader, desc=f"Test", leave=False):
                     images, targets = images.to(device), targets.to(device)
-                    with autocast(enabled=amp):
-                        logits = model(images)
-                        loss = criterion(logits, targets)
+                    logits = model(images)
+                    loss = criterion(logits, targets)
                     te_loss_sum += loss.item() * images.size(0)
                     preds = torch.argmax(logits, dim=1)
                     te_preds.extend(preds.cpu().numpy())
