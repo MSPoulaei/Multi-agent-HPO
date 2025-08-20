@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 def plot_curves(metrics_df, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     epochs = metrics_df["epoch"]
-
+    
     # Loss
     plt.figure()
     plt.plot(epochs, metrics_df["train_loss"], label="train_loss")
@@ -37,7 +37,6 @@ def plot_curves(metrics_df, out_dir):
     plt.close()
 
     # Combined
-    import matplotlib.pyplot as plt
     fig, axs = plt.subplots(2, 2, figsize=(10, 8))
     axs[0,0].plot(epochs, metrics_df["train_loss"], label="train_loss")
     axs[0,0].plot(epochs, metrics_df["val_loss"], label="val_loss")
