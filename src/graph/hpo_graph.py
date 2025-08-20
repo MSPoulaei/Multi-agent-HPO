@@ -6,28 +6,52 @@ from langgraph.graph import StateGraph, END
 import logging
 
 from ..agents.models import llm_for_role
-from ..agents.prompts import GEN_SYS, CONSULTANT_USER, SUPERVISOR_USER, EXEC_ANALYZER_SYS, EXEC_ANALYZER_USER, RESEARCHER_SYS, RESEARCHER_USER
+from ..agents.prompts import (
+    GEN_SYS,
+    CONSULTANT_USER,
+    SUPERVISOR_USER,
+    EXEC_ANALYZER_SYS,
+    EXEC_ANALYZER_USER,
+    RESEARCHER_SYS,
+    RESEARCHER_USER,
+)
 from ..executor.train import train_and_eval, validate_hparams
 from ..executor.metrics import heuristic_analysis
 from ..tools.google_search import web_search
 from ..utils.io import save_json, save_csv
+
 # Removing unused import
 from .state import HPOState
 
+
 def clamp_actions_to_ranges(last_hp: Dict[str, Any], actions: list):
-    hp = dict(last_hp) if last_hp else {
-        "optimizer":"adam", "learning_rate":3e-3, "train_batch_size":128, "weight_decay":5e-4, "label_smoothing":0.05
-    }
+    hp = (
+        dict(last_hp)
+        if last_hp
+        else {
+            "optimizer": "adam",
+            "learning_rate": 3e-3,
+            "train_batch_size": 128,
+            "weight_decay": 5e-4,
+            "label_smoothing": 0.05,
+        }
+    )
     for a in actions:
         field = a.get("field")
-        if field not in ["optimizer","learning_rate","train_batch_size","weight_decay","label_smoothing"]:
+        if field not in [
+            "optimizer",
+            "learning_rate",
+            "train_batch_size",
+            "weight_decay",
+            "label_smoothing",
+        ]:
             continue
         act = a.get("action")
         if field == "optimizer":
             to = a.get("to")
-            if to in ["adam","sgd"]:
+            if to in ["adam", "sgd"]:
                 hp["optimizer"] = to
-        elif field in ["learning_rate","weight_decay"]:
+        elif field in ["learning_rate", "weight_decay"]:
             if act == "increase":
                 factor = float(a.get("factor", 1.1))
                 hp[field] = hp[field] * max(factor, 0.1)
@@ -40,11 +64,11 @@ def clamp_actions_to_ranges(last_hp: Dict[str, Any], actions: list):
             if "to" in a:
                 hp[field] = int(a["to"])
             elif act == "increase":
-                choices = [32,64,128,256,512]
+                choices = [32, 64, 128, 256, 512]
                 greater = [x for x in choices if x > hp[field]]
                 hp[field] = min(greater) if greater else choices[-1]
             elif act == "decrease":
-                choices = [32,64,128,256,512]
+                choices = [32, 64, 128, 256, 512]
                 lesser = [x for x in choices if x < hp[field]]
                 hp[field] = max(lesser) if lesser else choices[0]
         elif field == "label_smoothing":
@@ -56,11 +80,13 @@ def clamp_actions_to_ranges(last_hp: Dict[str, Any], actions: list):
                 hp[field] -= float(a.get("delta", 0.02))
     return validate_hparams(hp)
 
+
 def parse_json_safe(text: str, default: Any):
     try:
         return json.loads(text)
     except Exception:
         import re
+
         m = re.search(r"\{.*\}", text, re.S)
         if m:
             try:
@@ -68,6 +94,7 @@ def parse_json_safe(text: str, default: Any):
             except Exception:
                 return default
         return default
+
 
 def build_hpo_graph(
     run_dir: str,
@@ -93,7 +120,11 @@ def build_hpo_graph(
             "consult_turn": 0,
             "consult_limit": consult_turns,
             "last_hparams": {
-                "optimizer":"N/A","learning_rate":-1,"train_batch_size":0,"weight_decay":0,"label_smoothing":0
+                "optimizer": "N/A",
+                "learning_rate": -1,
+                "train_batch_size": 0,
+                "weight_decay": 0,
+                "label_smoothing": 0,
             },
             "gen_consult_a": [],
             "gen_consult_b": [],
@@ -102,8 +133,13 @@ def build_hpo_graph(
             "anonymize": anonymize,
             "model_ids": model_ids,
             "trainer_cfg": {
-                "epochs": epochs, "patience": patience, "scheduler": scheduler, "augment": augment,
-                "num_workers": num_workers, "amp": amp, "save_checkpoints": save_checkpoints
+                "epochs": epochs,
+                "patience": patience,
+                "scheduler": scheduler,
+                "augment": augment,
+                "num_workers": num_workers,
+                "amp": amp,
+                "save_checkpoints": save_checkpoints,
             },
             "best_so_far": {"val_acc": -1.0, "trial_idx": -1, "hparams": None},
             "trials_summary_rows": [],
@@ -119,10 +155,28 @@ def build_hpo_graph(
             results_summary=json.dumps(state.get("train_results", {})),
             heuristics=json.dumps(state.get("analysis", {}).get("trends", {})),
             keywords=json.dumps(state.get("keywords", [])),
-            web_hints=json.dumps(state.get("web_hints", {}))
+            web_hints=json.dumps(state.get("web_hints", {})),
         )
         resp = llm.invoke([("system", GEN_SYS), ("user", inp)]).content
-        data = parse_json_safe(resp, {"proposed_changes": [], "notes":"", "confidence":0.5})
+        data = parse_json_safe(
+            resp, {"proposed_changes": [], "notes": "", "confidence": 0.5}
+        )
+        # Save transcript
+        transcript = {
+            "agent": "consultant_a",
+            "round": state["trial_idx"],
+            "prompt": inp,
+            "response": resp,
+            "parsed": data,
+        }
+        transcript_path = os.path.join(
+            state["run_dir"],
+            "..",
+            "transcripts",
+            f"transcript_consultant_a_round_{state['trial_idx']:03d}.json",
+        )
+        with open(transcript_path, "w", encoding="utf-8") as f:
+            json.dump(transcript, f, ensure_ascii=False, indent=2)
         # Append-only update, and increment consult_turn
         return {"gen_consult_a": [data], "consult_turn": state["consult_turn"] + 1}
 
@@ -133,10 +187,28 @@ def build_hpo_graph(
             results_summary=json.dumps(state.get("train_results", {})),
             heuristics=json.dumps(state.get("analysis", {}).get("trends", {})),
             keywords=json.dumps(state.get("keywords", [])),
-            web_hints=json.dumps(state.get("web_hints", {}))
+            web_hints=json.dumps(state.get("web_hints", {})),
         )
         resp = llm.invoke([("system", GEN_SYS), ("user", inp)]).content
-        data = parse_json_safe(resp, {"proposed_changes": [], "notes":"", "confidence":0.5})
+        data = parse_json_safe(
+            resp, {"proposed_changes": [], "notes": "", "confidence": 0.5}
+        )
+        # Save transcript
+        transcript = {
+            "agent": "consultant_b",
+            "round": state["trial_idx"],
+            "prompt": inp,
+            "response": resp,
+            "parsed": data,
+        }
+        transcript_path = os.path.join(
+            state["run_dir"],
+            "..",
+            "transcripts",
+            f"transcript_consultant_b_round_{state['trial_idx']:03d}.json",
+        )
+        with open(transcript_path, "w", encoding="utf-8") as f:
+            json.dump(transcript, f, ensure_ascii=False, indent=2)
         return {"gen_consult_b": [data], "consult_turn": state["consult_turn"] + 1}
 
     def consult_router_a(state: HPOState):
@@ -150,7 +222,7 @@ def build_hpo_graph(
             return "consultant_a"
         else:
             return "supervisor"
-    
+
     def consult_router(state: HPOState):
         if state["consult_turn"] < state["consult_limit"]:
             return "consultant_a" if state["consult_turn"] % 2 == 0 else "consultant_b"
@@ -158,19 +230,52 @@ def build_hpo_graph(
             return "supervisor"
 
     def supervisor_node(state: HPOState):
-        llm = llm_for_role("supervisor", state["model_ids"]["supervisor"], temperature=0.2)
-        a = state["gen_consult_a"][-1] if state.get("gen_consult_a") else {"proposed_changes": []}
-        b = state["gen_consult_b"][-1] if state.get("gen_consult_b") else {"proposed_changes": []}
+        llm = llm_for_role(
+            "supervisor", state["model_ids"]["supervisor"], temperature=0.2
+        )
+        a = (
+            state["gen_consult_a"][-1]
+            if state.get("gen_consult_a")
+            else {"proposed_changes": []}
+        )
+        b = (
+            state["gen_consult_b"][-1]
+            if state.get("gen_consult_b")
+            else {"proposed_changes": []}
+        )
         inp = SUPERVISOR_USER.format(
             last_hparams=json.dumps(state["last_hparams"]),
             consultant_a=json.dumps(a),
             consultant_b=json.dumps(b),
-            web_hints=json.dumps(state.get("web_hints", {}))
+            web_hints=json.dumps(state.get("web_hints", {})),
         )
         resp = llm.invoke([("system", GEN_SYS), ("user", inp)]).content
-        data = parse_json_safe(resp, {"hyperparameters": state["last_hparams"], "justification": ""})
+        data = parse_json_safe(
+            resp, {"hyperparameters": state["last_hparams"], "justification": ""}
+        )
+        # Save transcript
+        transcript = {
+            "agent": "supervisor",
+            "round": state["trial_idx"],
+            "prompt": inp,
+            "response": resp,
+            "parsed": data,
+        }
+        transcript_path = os.path.join(
+            state["run_dir"],
+            "..",
+            "transcripts",
+            f"transcript_supervisor_round_{state['trial_idx']:03d}.json",
+        )
+        with open(transcript_path, "w", encoding="utf-8") as f:
+            json.dump(transcript, f, ensure_ascii=False, indent=2)
         hp = validate_hparams(data.get("hyperparameters", state["last_hparams"]))
-        return {"supervisor_out": {"hyperparameters": hp, "justification": data.get("justification","")}}
+        return {
+            "supervisor_out": {
+                "hyperparameters": hp,
+                "justification": data.get("justification", ""),
+            }
+        }
 
     def executor_node(state: HPOState):
         trial_idx = state["trial_idx"]
@@ -178,7 +283,8 @@ def build_hpo_graph(
         hp = state["supervisor_out"]["hyperparameters"]
 
         summary, metrics_df = train_and_eval(
-            trial_dir=trial_dir, hp=hp,
+            trial_dir=trial_dir,
+            hp=hp,
             epochs=state["trainer_cfg"]["epochs"],
             patience=state["trainer_cfg"]["patience"],
             scheduler_type=state["trainer_cfg"]["scheduler"],
@@ -192,7 +298,11 @@ def build_hpo_graph(
         val_acc = float(summary["best_val_acc"])
         best_so_far = state["best_so_far"]
         if val_acc > best_so_far["val_acc"]:
-            best_so_far = {"val_acc": val_acc, "trial_idx": trial_idx, "hparams": summary["effective_hparams"]}
+            best_so_far = {
+                "val_acc": val_acc,
+                "trial_idx": trial_idx,
+                "hparams": summary["effective_hparams"],
+            }
 
         row = {
             "trial_idx": trial_idx,
@@ -207,6 +317,18 @@ def build_hpo_graph(
             "oom_adjusted": summary["oom_adjusted"],
         }
 
+        # Save transcript for executor agent
+        transcript = {
+            "agent": "executor",
+            "round": trial_idx,
+            "hyperparameters": hp,
+            "summary": summary,
+            "metrics": row
+        }
+        transcript_path = os.path.join(state["run_dir"], "..", "transcripts", f"transcript_executor_round_{trial_idx:03d}.json")
+        with open(transcript_path, "w", encoding="utf-8") as f:
+            json.dump(transcript, f, ensure_ascii=False, indent=2)
+
         metrics_path = os.path.join(trial_dir, "metrics_epoch.csv")
         return {
             "train_results": summary,
@@ -218,11 +340,13 @@ def build_hpo_graph(
     def analyzer_node(state: HPOState):
         llm = llm_for_role("exec", state["model_ids"]["exec"], temperature=0.2)
         metrics_df = pd.read_csv(state["metrics_df_path"])
+
         def clip(arr, k=5):
             arr = list(arr)
-            if len(arr) <= 2*k:
+            if len(arr) <= 2 * k:
                 return arr
             return arr[:k] + ["..."] + arr[-k:]
+
         m = {
             "train_loss": clip(metrics_df["train_loss"].round(4).tolist()),
             "val_loss": clip(metrics_df["val_loss"].round(4).tolist()),
@@ -236,20 +360,49 @@ def build_hpo_graph(
             last_hparams=json.dumps(state["supervisor_out"]["hyperparameters"]),
             metrics_head_tail=json.dumps(m),
             trends=json.dumps(feats),
-            heuristic_flags=json.dumps(feats["flags"])
+            heuristic_flags=json.dumps(feats["flags"]),
         )
         resp = llm.invoke([("system", EXEC_ANALYZER_SYS), ("user", inp)]).content
-        data = parse_json_safe(resp, {"keywords": keywords_h, "explanation": "", "confidence": 0.6})
+        data = parse_json_safe(
+            resp, {"keywords": keywords_h, "explanation": "", "confidence": 0.6}
+        )
+        # Save transcript
+        transcript = {
+            "agent": "analyzer",
+            "round": state["trial_idx"],
+            "prompt": inp,
+            "response": resp,
+            "parsed": data,
+        }
+        transcript_path = os.path.join(
+            state["run_dir"],
+            "..",
+            "transcripts",
+            f"transcript_analyzer_round_{state['trial_idx']:03d}.json",
+        )
+        with open(transcript_path, "w", encoding="utf-8") as f:
+            json.dump(transcript, f, ensure_ascii=False, indent=2)
         merged_kw = list(set(keywords_h + data.get("keywords", [])))
         trial_dir = os.path.join(state["run_dir"], f"trial_{state['trial_idx']:03d}")
         with open(os.path.join(trial_dir, "analysis_llm.txt"), "w") as f:
             f.write(resp)
-        save_json(os.path.join(trial_dir, "analysis.json"), {"heuristics": feats, "keywords": merged_kw})
-        return {"analysis": {"trends": feats, "keywords": merged_kw}, "keywords": merged_kw}
+        save_json(
+            os.path.join(trial_dir, "analysis.json"),
+            {"heuristics": feats, "keywords": merged_kw},
+        )
+        return {
+            "analysis": {"trends": feats, "keywords": merged_kw},
+            "keywords": merged_kw,
+        }
 
     def researcher_node(state: HPOState):
-        llm = llm_for_role("researcher", state["model_ids"]["researcher"], temperature=0.3)
-        query = " ".join(state.get("keywords", [])) + " image classification training remedies generalization optimization"
+        llm = llm_for_role(
+            "researcher", state["model_ids"]["researcher"], temperature=0.3
+        )
+        query = (
+            " ".join(state.get("keywords", []))
+            + " image classification training remedies generalization optimization"
+        )
         excerpts = web_search(query, provider=state["search_provider"], top_k=5)
         inp = RESEARCHER_USER.format(
             keywords=json.dumps(state.get("keywords", [])),
@@ -258,19 +411,45 @@ def build_hpo_graph(
         )
         resp = llm.invoke([("system", RESEARCHER_SYS), ("user", inp)]).content
         data = parse_json_safe(resp, {"actions": [], "notes": ""})
-        candidate = clamp_actions_to_ranges(state["supervisor_out"]["hyperparameters"], data.get("actions", []))
+        # Save transcript
+        transcript = {
+            "agent": "researcher",
+            "round": state["trial_idx"],
+            "prompt": inp,
+            "response": resp,
+            "parsed": data,
+        }
+        transcript_path = os.path.join(
+            state["run_dir"],
+            "..",
+            "transcripts",
+            f"transcript_researcher_round_{state['trial_idx']:03d}.json",
+        )
+        with open(transcript_path, "w", encoding="utf-8") as f:
+            json.dump(transcript, f, ensure_ascii=False, indent=2)
+        candidate = clamp_actions_to_ranges(
+            state["supervisor_out"]["hyperparameters"], data.get("actions", [])
+        )
         next_trial = state["trial_idx"] + 1
-        return {"web_hints": {"actions": data.get("actions", []), "notes": data.get("notes",""), "candidate": candidate},
+        return {
+            "web_hints": {
+                "actions": data.get("actions", []),
+                "notes": data.get("notes", ""),
+                "candidate": candidate,
+            },
             "trial_idx": next_trial,
             "consult_turn": 0,
             "last_hparams": state["supervisor_out"]["hyperparameters"],
-                }
+        }
 
     def loop_or_end(state: HPOState):
         df = pd.DataFrame(state.get("trials_summary_rows", []))
         save_csv(os.path.join(state["run_dir"], "trials_summary.csv"), df)
         if state["trial_idx"] >= state["rounds"]:
-            save_json(os.path.join(state["run_dir"], "best_overall.json"), state["best_so_far"])
+            save_json(
+                os.path.join(state["run_dir"], "best_overall.json"),
+                state["best_so_far"],
+            )
             return END
         else:
             return "consultant_a"
@@ -285,17 +464,23 @@ def build_hpo_graph(
     builder.add_node("researcher", researcher_node)
 
     builder.set_entry_point("init")
-    builder.add_conditional_edges("consultant_a", consult_router_a, {"consultant_b":"consultant_b","supervisor":"supervisor"
-    })
-    builder.add_conditional_edges("consultant_b", consult_router_b, {
-        "consultant_a":"consultant_a","supervisor":"supervisor"
-    })
+    builder.add_conditional_edges(
+        "consultant_a",
+        consult_router_a,
+        {"consultant_b": "consultant_b", "supervisor": "supervisor"},
+    )
+    builder.add_conditional_edges(
+        "consultant_b",
+        consult_router_b,
+        {"consultant_a": "consultant_a", "supervisor": "supervisor"},
+    )
     builder.add_edge("init", "consultant_a")
     builder.add_edge("supervisor", "executor")
     builder.add_edge("executor", "analyzer")
     builder.add_edge("analyzer", "researcher")
-    builder.add_conditional_edges("researcher", loop_or_end,
-                                  {"consultant_a":"consultant_a", END: END})
+    builder.add_conditional_edges(
+        "researcher", loop_or_end, {"consultant_a": "consultant_a", END: END}
+    )
 
     logging.basicConfig(level=logging.INFO)
     compiled = builder.compile(debug=True)
