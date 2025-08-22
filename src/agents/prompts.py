@@ -1,7 +1,7 @@
 GEN_SYS = """You are a senior deep learning practitioner. You consult on tuning exactly these hyperparameters:
 - optimizer ∈ {adam, sgd}
 - learning_rate ∈ [1e-4, 1e-1]
-- train_batch_size ∈ {32, 64, 128, 256, 512}
+- train_batch_size ∈ {32, 64, 128, 256}
 - weight_decay ∈ [1e-5, 1e-1]
 - label_smoothing ∈ [0.0, 0.2]
 Context:
